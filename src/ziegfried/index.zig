@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const assertError = std.debug.assertError;
 const Allocator = std.mem.Allocator;
 
 //===========================================================================//
@@ -127,8 +128,9 @@ const Superblock = packed struct {
         superblock.header.heap = heap;
         // Initialize block free list:
         var next: ?[*]u8 = null;
-        var offset = superblock_alloc_space - block_size;
-        while (offset >= block_size) : (offset -= block_size) {
+        var offset: usize = superblock_alloc_space;
+        while (offset >= block_size) {
+            offset -= block_size;
             const ptr: [*]u8 = superblock.blocks[offset..].ptr;
             @ptrCast(*?[*]u8, @alignCast(min_block_size, ptr)).* = next;
             next = ptr;
@@ -186,15 +188,21 @@ const Superblock = packed struct {
     /// `OutOfMemory` if this superblock is totally full.  This should only be
     /// called from `Heap.allocFrom`.
     fn alloc(self: *Superblock, size: usize) Allocator.Error![]u8 {
-        assert(size <= self.header.block_size);
+        assertMsg(size <= self.header.block_size,
+                  "cannot alloc size {} in superblock with block size {}\n",
+                  size, self.header.block_size);
         if (self.header.first_free_block) |ptr| {
-            assert(self.header.num_free_blocks > 0);
+            assertMsg(self.header.num_free_blocks > 0,
+                      "has first_free_block, but num_free_blocks is {}\n",
+                      self.header.num_free_blocks);
             self.header.num_free_blocks -= 1;
             self.header.first_free_block =
                 @ptrCast(*?[*]u8, @alignCast(min_block_size, ptr)).*;
             return ptr[0..size];
         } else {
-            assert(self.header.num_free_blocks == 0);
+            assertMsg(self.header.num_free_blocks == 0,
+                      "no first_free_block, but num_free_blocks is {}\n",
+                      self.header.num_free_blocks);
             return Allocator.Error.OutOfMemory;
         }
     }
@@ -431,7 +439,15 @@ pub const ZiegfriedAllocator = struct {
 
 //===========================================================================//
 
-test "alloc_i32" {
+fn assertMsg(condition: bool, comptime format: []const u8, args: ...) void {
+    if (!condition) {
+        std.debug.panic(format, args);
+    }
+}
+
+//===========================================================================//
+
+test "createOne(i32)" {
     var buffer: [1 << 16]u8 = undefined;
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
@@ -440,14 +456,50 @@ test "alloc_i32" {
     ziegfried.allocator.destroy(ptr);
 }
 
-test "alloc_too_large" {
+test "huge allocation, out of memory" {
     var buffer: [1 << 16]u8 = undefined;
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
-    if (ziegfried.allocator.alignedAlloc(u8, 1, 1 << 20)) |_slice| {
-        assert(false);
-    } else |err| {
-        assert(err == Allocator.Error.OutOfMemory);
+    assertError(ziegfried.allocator.alignedAlloc(u8, 1, 1 << 20),
+                Allocator.Error.OutOfMemory);
+}
+
+test "allocate a bunch of small objects" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+
+    var slice = try ziegfried.allocator.alloc(*i32, 50);
+    defer ziegfried.allocator.free(slice);
+    assert(slice.len == 50);
+    for (slice) |*item, i| {
+        item.* = try ziegfried.allocator.create(@intCast(i32, i));
+    }
+    for (slice) |item, i| {
+        assert(item.* == @intCast(i32, i));
+        ziegfried.allocator.destroy(item);
+    }
+}
+
+test "allocate many differently-sized objects" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+
+    var prng = std.rand.DefaultPrng.init(12345);
+    var slice = try ziegfried.allocator.alloc([]u8, 10000);
+    defer ziegfried.allocator.free(slice);
+    for (slice) |*item| {
+        const size = prng.random.range(u8, 1, 250);
+        item.* = try ziegfried.allocator.alloc(u8, size);
+        assert(item.len == size);
+        for (item.*) |*byte| byte.* = size;
+    }
+
+    prng.random.shuffle([]u8, slice);
+    for (slice) |item| {
+        assert(item.len <= 250);
+        const size = @intCast(u8, item.len);
+        for (item) |byte| assert(byte == size);
+        ziegfried.allocator.free(item);
     }
 }
 
