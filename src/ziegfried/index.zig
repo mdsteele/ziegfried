@@ -572,7 +572,45 @@ test "allocate many differently-sized objects" {
     }
 }
 
-test "realloc smaller within same heap" {
+test "realloc from huge to huge" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    var old_slice = try ziegfried.allocator.alloc(u8, 15000);
+    assertMsg(old_slice.len == 15000, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i % 256);
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 10000);
+    assertMsg(new_slice.len == 10000, "new_slice.len = {}", old_slice.len);
+    for (new_slice) |value, i| assert(value == i % 256);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc from huge to small" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    var old_slice = try ziegfried.allocator.alloc(u8, 10000);
+    assertMsg(old_slice.len == 10000, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i % 256);
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 50);
+    assertMsg(new_slice.len == 50, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr != old_slice.ptr);
+    for (new_slice) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc from small to huge" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    var old_slice = try ziegfried.allocator.alloc(u8, 50);
+    assertMsg(old_slice.len == 50, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i);
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 10000);
+    assertMsg(new_slice.len == 10000, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr != old_slice.ptr);
+    for (new_slice[0..50]) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc smaller within same block size" {
     var direct = std.heap.DirectAllocator.init();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
     var old_slice = try ziegfried.allocator.alloc(usize, 7);
@@ -583,9 +621,10 @@ test "realloc smaller within same heap" {
     assertMsg(new_slice.ptr == old_slice.ptr, "old ptr = {}, new ptr = {}",
               old_slice.ptr, new_slice.ptr);
     for (new_slice) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
 }
 
-test "realloc larger within same heap" {
+test "realloc bigger within same block size" {
     var direct = std.heap.DirectAllocator.init();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
     var old_slice = try ziegfried.allocator.alloc(usize, 5);
@@ -596,8 +635,59 @@ test "realloc larger within same heap" {
     assertMsg(new_slice.ptr == old_slice.ptr, "old ptr = {}, new ptr = {}",
               old_slice.ptr, new_slice.ptr);
     for (new_slice[0..5]) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
 }
 
-// TODO: Add lots more tests!
+test "realloc to a bigger block size" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    var old_slice = try ziegfried.allocator.alloc(u8, 30);
+    assertMsg(old_slice.len == 30, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i);
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 100);
+    assertMsg(new_slice.len == 100, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr != old_slice.ptr);
+    for (new_slice[0..30]) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc to a smaller block size" {
+    var direct = std.heap.DirectAllocator.init();
+    var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    var old_slice = try ziegfried.allocator.alloc(u8, 100);
+    assertMsg(old_slice.len == 100, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i);
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 30);
+    assertMsg(new_slice.len == 30, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr != old_slice.ptr);
+    for (new_slice) |value, i| assert(value == i);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc to a smaller block size with OOM" {
+    // Make the child allocator have just enough memory for the heap array and
+    // one superblock.
+    var direct = std.heap.DirectAllocator.init();
+    var buffer = try direct.allocator.alignedAlloc(
+        u8, superblock_total_size, 2 * superblock_total_size);
+    defer direct.allocator.free(buffer);
+    var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
+    var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    // Allocate a block, which will create a new superblock.
+    var old_slice = try ziegfried.allocator.alloc(u8, 100);
+    assertMsg(old_slice.len == 100, "old_slice.len = {}", old_slice.len);
+    for (old_slice) |*value, i| value.* = @intCast(u8, i);
+    // Verify that we cannot create a new smaller block (because the child
+    // allocator doesn't have room for another superblock).
+    assertError(ziegfried.allocator.alloc(u8, 30),
+                Allocator.Error.OutOfMemory);
+    // Now reallac the first block to a smaller block size.  Since we can't
+    // create a new superblock, as a fallback it should just give us back the
+    // same block, trimmed to the smaller size.
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 30);
+    assertMsg(new_slice.len == 30, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr == old_slice.ptr);
+    ziegfried.allocator.free(new_slice);
+}
 
 //===========================================================================//
