@@ -99,6 +99,7 @@ const STHeap = struct {
     fn freeFrom(self: *this, superblock: *Superblock,
                 old_mem: []u8) void {
         assert(superblock.header.heap == self);
+        assert(superblock.header.block_size == self.block_size);
         superblock.free(old_mem);
         const index = superblock.emptynessBucketIndex();
         if (index == params.totally_empty_bucket_index) {
@@ -115,13 +116,15 @@ const STHeap = struct {
 
 /// A single-threaded (that is, non-thread-safe) allocator.
 pub const ZiegfriedAllocator = struct {
+    const Heap = STHeap;
+
     pub allocator: Allocator,
     child_allocator: *Allocator,
-    heaps: []STHeap,
+    heaps: []Heap,
 
     pub fn init(child_allocator: *Allocator) !ZiegfriedAllocator {
         const num_heaps = num_block_sizes;
-        var heaps = try child_allocator.alloc(STHeap, num_heaps);
+        var heaps = try child_allocator.alloc(Heap, num_heaps);
         var block_size: u32 = params.min_block_size;
         for (heaps) |*heap| {
             heap.init(block_size);
@@ -163,38 +166,7 @@ pub const ZiegfriedAllocator = struct {
         const self = @fieldParentPtr(ZiegfriedAllocator, "allocator",
                                      allocator);
         const old_size = old_mem.len;
-        if (old_size > params.max_block_size) {
-            // The old memory is large enough that it came directly from the
-            // child allocator.
-            if (new_size > params.max_block_size) {
-                // The new size also needs to be handled directly by the child
-                // allocator, so we can just let the child allocator handle the
-                // whole realloc.
-                return try self.child_allocator.reallocFn(
-                    self.child_allocator, old_mem, new_size, alignment);
-            } else {
-                // The new size is small enough that we should allocate it from
-                // a superblock.
-                assert(new_size < old_size);
-                const heap = &self.heaps[blockSizeIndex(new_size)];
-                // TODO: This allocation can fail, but realloc isn't supposed
-                // to fail when new_size <= old_size.  For discussion on this,
-                // see https://github.com/ziglang/zig/issues/1306.
-                var new_mem = try heap.alloc(new_size, self.child_allocator);
-                std.mem.copy(u8, new_mem, old_mem[0..new_size]);
-                self.child_allocator.freeFn(self.child_allocator, old_mem);
-                return new_mem;
-            }
-        } else {
-            // The old memory is small enough that it should be stored in a
-            // superblock; start by sanity-checking that this is the case.
-            const superblock: *Superblock =
-                @intToPtr(*Superblock,
-                          @ptrToInt(old_mem.ptr) & params.superblock_ptr_mask);
-            if (superblock.header.magic_number !=
-                params.superblock_magic_number) {
-                @panic("Tried to realloc memory from a different allocator");
-            }
+        if (self.superblockForAlloc(old_mem)) |superblock| {
             assert(old_size <= superblock.header.block_size);
             const old_heap = superblock.header.heap;
             assert(old_heap.block_size == superblock.header.block_size);
@@ -238,22 +210,44 @@ pub const ZiegfriedAllocator = struct {
                     return new_mem;
                 }
             }
+        } else {
+            // If we're here, that means the old memory belongs to the child
+            // allocator.  Typically this implies that old_size >
+            // params.max_block_size, but it's possible that old_size is
+            // actually very small, if we previously realloced a large
+            // allocation to a smaller size and failed to allocate a new
+            // superblock at that time.
+            if (new_size > params.max_block_size) {
+                // The new size also needs to be handled directly by the child
+                // allocator, so we can just let the child allocator handle the
+                // whole realloc.
+                return try self.child_allocator.reallocFn(
+                    self.child_allocator, old_mem, new_size, alignment);
+            } else {
+                // The new size is small enough that we should allocate it from
+                // a superblock.  However, if that fails, we can fall back to
+                // asking the child allocator to do the realloc.  This allows
+                // us to obey the requirement that a realloc to a smaller size
+                // must succeed.
+                const heap = &self.heaps[blockSizeIndex(new_size)];
+                var new_mem = heap.alloc(new_size, self.child_allocator)
+                    catch return try self.child_allocator.reallocFn(
+                        self.child_allocator, old_mem, new_size, alignment);
+                std.mem.copy(u8, new_mem, old_mem[0..new_size]);
+                self.child_allocator.freeFn(self.child_allocator, old_mem);
+                return new_mem;
+            }
         }
     }
 
     fn free(allocator: *Allocator, old_mem: []u8) void {
         const self = @fieldParentPtr(ZiegfriedAllocator, "allocator",
                                      allocator);
-        if (old_mem.len > params.max_block_size) {
+        if (self.superblockForAlloc(old_mem)) |superblock| {
+            superblock.header.heap.freeFrom(superblock, old_mem);
+        } else {
             return self.child_allocator.freeFn(self.child_allocator, old_mem);
         }
-        const superblock: *Superblock =
-            @intToPtr(*Superblock,
-                      @ptrToInt(old_mem.ptr) & params.superblock_ptr_mask);
-        if (superblock.header.magic_number != params.superblock_magic_number) {
-            @panic("Tried to free memory from a different allocator");
-        }
-        superblock.header.heap.freeFrom(superblock, old_mem);
     }
 
     fn blockSizeIndex(size: usize) usize {
@@ -266,6 +260,39 @@ pub const ZiegfriedAllocator = struct {
                std.math.log2_int_ceil(usize, params.max_block_size));
         return block_size_exponent -
             std.math.log2_int_ceil(usize, params.min_block_size);
+    }
+
+    fn superblockForAlloc(self: *this, old_mem: []u8) ?*Superblock {
+        if (old_mem.len > params.max_block_size) {
+            // This memory slice is too large to fit in any block, so it must
+            // belong to the child allocator.
+            return null;
+        }
+        const ptrOriginal = @ptrToInt(old_mem.ptr);
+        const ptrMasked = ptrOriginal & params.superblock_ptr_mask;
+        if (ptrMasked == ptrOriginal) {
+            // Blocks are never aligned to the size of a superblock, so this
+            // must belong to the child allocator (e.g. it may be a large
+            // allocation made directly from a DirectAllocator).
+            return null;
+        }
+        const superblock: *Superblock = @intToPtr(*Superblock, ptrMasked);
+        if (superblock.header.magic_number != params.superblock_magic_number) {
+            // This memory isn't within a Superblock struct, so it must belong
+            // to the child allocator.
+            return null;
+        }
+        // The superblock's magic number is correct, but there's still a chance
+        // that that's a coincidence, so as a final check, make sure the
+        // superblock's heap pointer actually points to one of our heaps.
+        const heapPtr = @ptrToInt(superblock.header.heap);
+        if (heapPtr < @ptrToInt(&self.heaps[0]) or
+            heapPtr > @ptrToInt(&self.heaps[self.heaps.len - 1])) {
+            return null;
+        }
+        // At this point, it is extremely unlikely that this is not one of our
+        // superblocks.
+        return superblock;
     }
 };
 
@@ -401,7 +428,7 @@ test "realloc bigger within same block size" {
     ziegfried.allocator.free(new_slice);
 }
 
-test "realloc to a bigger block size" {
+test "realloc small to big block size" {
     var direct = std.heap.DirectAllocator.init();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
     var old_slice = try ziegfried.allocator.alloc(u8, 30);
@@ -414,7 +441,7 @@ test "realloc to a bigger block size" {
     ziegfried.allocator.free(new_slice);
 }
 
-test "realloc to a smaller block size" {
+test "realloc big to small block size" {
     var direct = std.heap.DirectAllocator.init();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
     var old_slice = try ziegfried.allocator.alloc(u8, 100);
@@ -427,7 +454,7 @@ test "realloc to a smaller block size" {
     ziegfried.allocator.free(new_slice);
 }
 
-test "realloc to a smaller block size with OOM" {
+test "realloc big to small block size with OOM" {
     // Make the child allocator have just enough memory for the heap array and
     // one superblock.
     var direct = std.heap.DirectAllocator.init();
@@ -450,6 +477,31 @@ test "realloc to a smaller block size with OOM" {
     var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 30);
     assertMsg(new_slice.len == 30, "new_slice.len = {}", old_slice.len);
     assert(new_slice.ptr == old_slice.ptr);
+    ziegfried.allocator.free(new_slice);
+}
+
+test "realloc from huge to small with OOM" {
+    // Make the child allocator have just enough memory for the heap array and
+    // one huge allocation.
+    var buffer: [2 * params.superblock_size]u8 = undefined;
+    var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
+    var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    // Allocate a huge block, which will come from the child allocator.
+    var old_slice = try ziegfried.allocator.alloc(u8, params.superblock_size);
+    assert(old_slice.len == params.superblock_size);
+    // Verify that we cannot create a new smaller block (because the child
+    // allocator doesn't have room for another superblock).
+    assertError(ziegfried.allocator.alloc(u8, 30),
+                Allocator.Error.OutOfMemory);
+    // Now reallac the first block to a smaller block size.  Since we can't
+    // create a new superblock, as a fallback it should ask the child allocator
+    // to handle the realloc.
+    var new_slice = try ziegfried.allocator.realloc(u8, old_slice, 30);
+    assertMsg(new_slice.len == 30, "new_slice.len = {}", old_slice.len);
+    assert(new_slice.ptr == old_slice.ptr);
+    // Finally, free the block.  Even though the block is now small enough that
+    // it could be part of a superblock, we should correctly deduce that it
+    // isn't, and ask the child allocator to free it.
     ziegfried.allocator.free(new_slice);
 }
 
