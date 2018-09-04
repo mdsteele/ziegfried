@@ -30,10 +30,10 @@ const STMHeap = struct {
     }
 
     pub fn alloc(self: *this, size: usize, child_allocator: *Allocator) ![]u8 {
-        assert(size <= params.span_max_size);
+        assert(size <= params.allocated_span_max_size);
         const num_chunks = Hyperblock.numChunksForSize(size);
         assert(num_chunks >= 1);
-        assert(num_chunks <= params.span_max_num_chunks);
+        assert(num_chunks <= params.allocated_span_max_num_chunks);
         // Look for an existing free span large enough for this allocation.
         // TODO: make this search loop a method of FreeSpanLists
         for (self.free_span_lists.lists[(num_chunks - 1)..]) |*list| {
@@ -53,7 +53,7 @@ const STMHeap = struct {
     }
 
     pub fn free(self: *this, old_mem: []u8, child_allocator: *Allocator) void {
-        assert(old_mem.len <= params.span_max_size);
+        assert(old_mem.len <= params.allocated_span_max_size);
         if (Hyperblock.allocSpanHyperblockPtr(old_mem)) |hyperblock| {
             assert(hyperblock.header.magic_number ==
                        params.hyperblock_magic_number);
@@ -90,7 +90,7 @@ const STMAllocator = struct {
     fn alloc(allocator: *Allocator, size: usize,
              alignment: u29) Allocator.Error![]u8 {
         const self = @fieldParentPtr(STMAllocator, "allocator", allocator);
-        if (size > params.span_max_size) {
+        if (size > params.allocated_span_max_size) {
             return try self.child_allocator.allocFn(self.child_allocator, size,
                                                     alignment);
         }
@@ -105,7 +105,7 @@ const STMAllocator = struct {
 
     fn free(allocator: *Allocator, old_mem: []u8) void {
         const self = @fieldParentPtr(STMAllocator, "allocator", allocator);
-        if (old_mem.len > params.span_max_size) {
+        if (old_mem.len > params.allocated_span_max_size) {
             self.child_allocator.freeFn(self.child_allocator, old_mem);
         } else {
             self.heap.free(old_mem, self.child_allocator);

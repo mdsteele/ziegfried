@@ -90,7 +90,7 @@ pub fn Hyperblock(comptime Heap: type) type {
                    params.hyperblock_num_chunks);
             const num_chunks = numChunksForSize(size);
             assert(num_chunks >= 1);
-            assert(num_chunks <= params.span_max_num_chunks);
+            assert(num_chunks <= params.allocated_span_max_num_chunks);
             assert(num_chunks <= span.num_chunks);
             const mask = ((HyperblockMask(1) << num_chunks) - 1) <<
                 @intCast(HyperblockMaskShift, start_chunk);
@@ -124,7 +124,7 @@ pub fn Hyperblock(comptime Heap: type) type {
 
         pub fn free(self: *ThisType, old_mem: []u8,
                     free_span_lists: *FreeSpanLists(Heap)) void {
-            assert(old_mem.len <= params.span_max_size);
+            assert(old_mem.len <= params.allocated_span_max_size);
             assert(@ptrToInt(old_mem.ptr) % params.chunk_size == 0);
             assert(@ptrToInt(old_mem.ptr) >= @ptrToInt(&self.chunks[0]));
             const start_chunk =
@@ -135,7 +135,7 @@ pub fn Hyperblock(comptime Heap: type) type {
             assert(start_chunk < params.hyperblock_num_chunks);
             const num_chunks = numChunksForSize(old_mem.len);
             assert(num_chunks >= 1);
-            assert(num_chunks <= params.span_max_num_chunks);
+            assert(num_chunks <= params.allocated_span_max_num_chunks);
             assert(start_chunk + num_chunks <= params.hyperblock_num_chunks);
             const mask = ((HyperblockMask(1) << num_chunks) - 1) <<
                 @intCast(HyperblockMaskShift, start_chunk);
@@ -197,7 +197,7 @@ pub fn Hyperblock(comptime Heap: type) type {
         }
 
         pub fn allocSpanHyperblockPtr(mem: []u8) ?*ThisType {
-            if (mem.len > params.span_max_size or
+            if (mem.len > params.allocated_span_max_size or
                     @ptrToInt(mem.ptr) % params.chunk_size != 0) {
                 return null;
             }
@@ -334,7 +334,7 @@ pub fn FreeSpanList(comptime Heap: type) type {
 
 pub fn FreeSpanLists(comptime Heap: type) type {
     return struct {
-        lists: [params.span_max_num_chunks]FreeSpanList(Heap),
+        lists: [params.allocated_span_max_num_chunks]FreeSpanList(Heap),
 
         pub fn init(self: *this) void {
             for (self.lists) |*list| {
@@ -349,7 +349,7 @@ pub fn FreeSpanLists(comptime Heap: type) type {
         }
 
         pub fn lastList(self: *this) *FreeSpanList(Heap) {
-            return &self.lists[params.span_max_num_chunks - 1];
+            return &self.lists[params.allocated_span_max_num_chunks - 1];
         }
 
         pub fn insert(self: *this, free_span: *FreeSpanHeader(Heap)) void {
@@ -359,7 +359,7 @@ pub fn FreeSpanLists(comptime Heap: type) type {
         fn listForNumChunks(self: *this,
                                 num_chunks: usize) *FreeSpanList(Heap) {
             assert(num_chunks >= 1);
-            if (num_chunks > params.span_max_num_chunks) {
+            if (num_chunks > params.allocated_span_max_num_chunks) {
                 return self.lastList();
             } else {
                 return &self.lists[num_chunks - 1];

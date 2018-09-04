@@ -61,17 +61,15 @@ pub const hyperblock_num_chunks = chunk_denominator - 1;
 /// The size of a hyperblock chunk.
 pub const chunk_size = @divExact(hyperblock_size, chunk_denominator);
 
-// TODO: The below constant names are misleading -- free spans can be larger
-// than this, it's only allocated spans that are limited in size.
-
 /// The maxinum number of hyperblock chunks that may comprise an allocated
 /// span.
-pub const span_max_num_chunks = @divExact(std.os.page_size, chunk_size);
+pub const allocated_span_max_num_chunks =
+    @divExact(std.os.page_size, chunk_size);
 
 /// The maximum size (in bytes) of an allocated span in a hyperblock.  Note
 /// that we must leave room for a pointer to the containing hyperblock.
-pub const span_max_size =
-    span_max_num_chunks * chunk_size - @sizeOf(*@OpaqueType());
+pub const allocated_span_max_size =
+    allocated_span_max_num_chunks * chunk_size - @sizeOf(*@OpaqueType());
 
 //===========================================================================//
 
