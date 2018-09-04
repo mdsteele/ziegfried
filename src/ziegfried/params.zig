@@ -16,7 +16,7 @@ pub const superblock_size = std.os.page_size;
 /// Bitwise-anding this mask with a pointer to a block will yield the pointer
 /// to its containing superblock.  This works because superblocks are always
 /// aligned to `superblock_size`.
-pub const superblock_ptr_mask: usize = ~(@intCast(usize, superblock_size) - 1);
+pub const superblock_ptr_mask = ~(usize(superblock_size) - 1);
 
 /// The maximum block size for a superblock.  Allocations larger than this are
 /// delegated to the child allocator (which will typically be allocating
@@ -40,14 +40,58 @@ pub const totally_empty_bucket_index = num_emptyness_buckets - 1;
 
 //===========================================================================//
 
+/// Arbitrary magic number stored as the first field in a Hyperblock struct.
+/// We use this to help detect errors where a program tries to free memory to
+/// our allocator that was not allocated by it.
+pub const hyperblock_magic_number: u32 = 0xda5b76a9;
+
+/// The size of a Hyperblock struct.  We'll typically be allocating these
+/// directly from the OS, so it's best for this to be a multiple of the system
+/// page size.
+pub const hyperblock_size = 8 * std.os.page_size;
+
+/// The number of equal-sized pieces that a hyperblock is divided into.  The
+/// first piece holds the hyperblock header, and the rest are used as
+/// allocation chunks.
+pub const chunk_denominator = 128;
+
+/// The number of chunks in a hyperblock.
+pub const hyperblock_num_chunks = chunk_denominator - 1;
+
+/// The size of a hyperblock chunk.
+pub const chunk_size = @divExact(hyperblock_size, chunk_denominator);
+
+// TODO: The below constant names are misleading -- free spans can be larger
+// than this, it's only allocated spans that are limited in size.
+
+/// The maxinum number of hyperblock chunks that may comprise an allocated
+/// span.
+pub const span_max_num_chunks = @divExact(std.os.page_size, chunk_size);
+
+/// The maximum size (in bytes) of an allocated span in a hyperblock.  Note
+/// that we must leave room for a pointer to the containing hyperblock.
+pub const span_max_size =
+    span_max_num_chunks * chunk_size - @sizeOf(*@OpaqueType());
+
+//===========================================================================//
+
+fn isPowerOfTwo(value: var) bool {
+    return value & (value - 1) == 0;
+}
+
 test "params" {
     // Make sure the superblock size is a power of two (so that we can mask out
     // block pointers to get a pointer to the containing superblock):
-    comptime assert(superblock_size & (superblock_size - 1) == 0);
+    comptime assert(isPowerOfTwo(superblock_size));
 
-    // Check that the min and max block sizes are powers of two:
-    comptime assert(min_block_size & (min_block_size - 1) == 0);
-    comptime assert(max_block_size & (max_block_size - 1) == 0);
+    // Block sizes must be powers of two, so check that the min and max block
+    // sizes are powers of two:
+    comptime assert(isPowerOfTwo(min_block_size));
+    comptime assert(isPowerOfTwo(max_block_size));
+
+    // We use chunk_size as an alignment for hyperblocks, so it must be a power
+    // of two:
+    comptime assert(isPowerOfTwo(chunk_size));
 }
 
 //===========================================================================//

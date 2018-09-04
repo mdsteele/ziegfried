@@ -69,8 +69,8 @@ pub fn Superblock(comptime Heap: type) type {
 
         pub fn deinit(self: *this, child_allocator: *Allocator) void {
             self.header.list_node.prev.next = self.header.list_node.next;
-            self.header.list_node.next.prev = self.header.lsit_node.prev;
-            child_allocator.free(self);
+            self.header.list_node.next.prev = self.header.list_node.prev;
+            child_allocator.destroy(self);
         }
 
         /// Returns true if this superblock is totally full.
@@ -116,6 +116,8 @@ pub fn Superblock(comptime Heap: type) type {
                 self.header.first_free_block =
                     @ptrCast(*?[*]u8,
                              @alignCast(params.min_block_size, ptr)).*;
+                // TODO: In Debug mode, memset the memory to 0xaa.
+                // TODO: In Debug mode, memset rest of block to 0xdd.
                 return ptr[0..size];
             } else {
                 assert(self.header.num_free_blocks == 0);
@@ -141,6 +143,7 @@ pub fn Superblock(comptime Heap: type) type {
                 self.header.first_free_block;
             self.header.first_free_block = old_mem.ptr;
             self.header.num_free_blocks += 1;
+            // TODO: In Debug mode, memset rest of block to 0xdd.
         }
     };
 }
@@ -163,8 +166,11 @@ pub fn SuperblockList(comptime Heap: type) type {
         /// Frees all superblocks in this list.
         fn deinit(self: *this, child_allocator: *Allocator) void {
             while (!self.isEmpty()) {
-                var superblock =
-                @fieldParentPtr(Superblock(Heap), "list_node", self.node.next);
+                const header =
+                    @fieldParentPtr(SuperblockHeader(Heap), "list_node",
+                                    self.node.next);
+                const superblock =
+                    @fieldParentPtr(Superblock(Heap), "header", header);
                 superblock.deinit(child_allocator);
             }
         }
@@ -194,11 +200,9 @@ pub fn SuperblockList(comptime Heap: type) type {
 
 //===========================================================================//
 
-test "superblock size" {
-    const FakeHeap = struct { list: SuperblockList(this) };
-
-    // Make sure the superblock size is correct:
-    comptime assert(@sizeOf(Superblock(FakeHeap)) == params.superblock_size);
+test "Superblock struct size is correct" {
+    comptime assert(@sizeOf(Superblock(@OpaqueType())) ==
+                    params.superblock_size);
 }
 
 //===========================================================================//

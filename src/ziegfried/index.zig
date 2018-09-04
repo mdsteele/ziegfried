@@ -46,7 +46,7 @@ const STHeap = struct {
     }
 
     fn deinit(self: *this, child_allocator: *Allocator) void {
-        for (self.emptyness_buckets) |bucket| {
+        for (self.emptyness_buckets) |*bucket| {
             bucket.deinit(child_allocator);
         }
     }
@@ -65,8 +65,7 @@ const STHeap = struct {
         for (self.emptyness_buckets[1..]) |*bucket, i| {
             const old_index = i + 1;
             if (bucket.head()) |superblock| {
-                return try self.allocFrom(superblock, old_index, size,
-                                          child_allocator);
+                return try self.allocFrom(superblock, old_index, size);
             }
         }
         // All superblocks are full, so allocate a new one.
@@ -77,15 +76,13 @@ const STHeap = struct {
         superblock.transferTo(
             &self.emptyness_buckets[params.totally_empty_bucket_index]);
         return try self.allocFrom(
-            superblock, params.totally_empty_bucket_index, size,
-            child_allocator);
+            superblock, params.totally_empty_bucket_index, size);
     }
 
     /// Allocates a slice of memory from the given superblock within this heap.
     /// `old_index` must be the superblock's current emptyness bucket index.
     fn allocFrom(self: *this, superblock: *Superblock,
-                 old_index: usize, size: usize,
-                 child_allocator: *Allocator) Allocator.Error![]u8 {
+                 old_index: usize, size: usize) Allocator.Error![]u8 {
         assert(superblock.header.heap == self);
         const mem = try superblock.alloc(size);
         const new_index = superblock.emptynessBucketIndex();
@@ -142,7 +139,7 @@ pub const ZiegfriedAllocator = struct {
     }
 
     pub fn deinit(self: *ZiegfriedAllocator) void {
-        for (heaps) |heap| {
+        for (self.heaps) |*heap| {
             heap.deinit(self.child_allocator);
         }
         self.child_allocator.free(self.heaps);
@@ -246,7 +243,7 @@ pub const ZiegfriedAllocator = struct {
         if (self.superblockForAlloc(old_mem)) |superblock| {
             superblock.header.heap.freeFrom(superblock, old_mem);
         } else {
-            return self.child_allocator.freeFn(self.child_allocator, old_mem);
+            self.child_allocator.freeFn(self.child_allocator, old_mem);
         }
     }
 
@@ -310,6 +307,7 @@ test "createOne(i32)" {
     var buffer: [1 << 16]u8 = undefined;
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    defer ziegfried.deinit();
     var ptr = try ziegfried.allocator.createOne(i32);
     ptr.* = 12345;
     ziegfried.allocator.destroy(ptr);
@@ -319,13 +317,16 @@ test "huge allocation, out of memory" {
     var buffer: [1 << 16]u8 = undefined;
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    defer ziegfried.deinit();
     assertError(ziegfried.allocator.alignedAlloc(u8, 1, 1 << 20),
                 Allocator.Error.OutOfMemory);
 }
 
 test "allocate a bunch of small objects" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
 
     var slice = try ziegfried.allocator.alloc(*i32, 50);
     defer ziegfried.allocator.free(slice);
@@ -341,7 +342,9 @@ test "allocate a bunch of small objects" {
 
 test "allocate many differently-sized objects" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
 
     var prng = std.rand.DefaultPrng.init(12345);
     var slice = try ziegfried.allocator.alloc([]u8, 10000);
@@ -364,7 +367,9 @@ test "allocate many differently-sized objects" {
 
 test "realloc from huge to huge" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(u8, 15000);
     assertMsg(old_slice.len == 15000, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = @intCast(u8, i % 256);
@@ -376,7 +381,9 @@ test "realloc from huge to huge" {
 
 test "realloc from huge to small" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(u8, 10000);
     assertMsg(old_slice.len == 10000, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = @intCast(u8, i % 256);
@@ -389,7 +396,9 @@ test "realloc from huge to small" {
 
 test "realloc from small to huge" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(u8, 50);
     assertMsg(old_slice.len == 50, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = @intCast(u8, i);
@@ -402,7 +411,9 @@ test "realloc from small to huge" {
 
 test "realloc smaller within same block size" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(usize, 7);
     assertMsg(old_slice.len == 7, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = i;
@@ -416,7 +427,9 @@ test "realloc smaller within same block size" {
 
 test "realloc bigger within same block size" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(usize, 5);
     assertMsg(old_slice.len == 5, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = i;
@@ -430,7 +443,9 @@ test "realloc bigger within same block size" {
 
 test "realloc small to big block size" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(u8, 30);
     assertMsg(old_slice.len == 30, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = @intCast(u8, i);
@@ -443,7 +458,9 @@ test "realloc small to big block size" {
 
 test "realloc big to small block size" {
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var ziegfried = try ZiegfriedAllocator.init(&direct.allocator);
+    defer ziegfried.deinit();
     var old_slice = try ziegfried.allocator.alloc(u8, 100);
     assertMsg(old_slice.len == 100, "old_slice.len = {}", old_slice.len);
     for (old_slice) |*value, i| value.* = @intCast(u8, i);
@@ -458,11 +475,13 @@ test "realloc big to small block size with OOM" {
     // Make the child allocator have just enough memory for the heap array and
     // one superblock.
     var direct = std.heap.DirectAllocator.init();
+    defer direct.deinit();
     var buffer = try direct.allocator.alignedAlloc(
         u8, params.superblock_size, 2 * params.superblock_size);
     defer direct.allocator.free(buffer);
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    defer ziegfried.deinit();
     // Allocate a block, which will create a new superblock.
     var old_slice = try ziegfried.allocator.alloc(u8, 100);
     assertMsg(old_slice.len == 100, "old_slice.len = {}", old_slice.len);
@@ -486,6 +505,7 @@ test "realloc from huge to small with OOM" {
     var buffer: [2 * params.superblock_size]u8 = undefined;
     var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer[0..]);
     var ziegfried = try ZiegfriedAllocator.init(&buffer_allocator.allocator);
+    defer ziegfried.deinit();
     // Allocate a huge block, which will come from the child allocator.
     var old_slice = try ziegfried.allocator.alloc(u8, params.superblock_size);
     assert(old_slice.len == params.superblock_size);
