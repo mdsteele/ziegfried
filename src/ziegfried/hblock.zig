@@ -49,10 +49,7 @@ pub fn Hyperblock(comptime Heap: type) type {
             hyperblock.header.list_node.init();
             // Initialize header for free span:
             var free_span = hyperblock.freeSpanStartingAt(0);
-            free_span.hyperblock = hyperblock;
-            free_span.list_node.init();
-            free_span.num_chunks = params.hyperblock_num_chunks;
-            // TODO: In debug mode, memset rest of free_span to 0xdd
+            free_span.init(hyperblock, params.hyperblock_num_chunks);
             free_span_lists.insert(free_span);
             // Add the hyperblock to the list.
             hyperblock_list.insert(hyperblock);
@@ -103,9 +100,7 @@ pub fn Hyperblock(comptime Heap: type) type {
                     @ptrCast(*FreeSpanHeader(Heap),
                              @alignCast(params.chunk_size,
                                         &self.chunks[new_start]));
-                new_free_span.hyperblock = self;
-                new_free_span.list_node.init();
-                new_free_span.num_chunks = span.num_chunks - num_chunks;
+                new_free_span.init(self, span.num_chunks - num_chunks);
                 free_span_lists.insert(new_free_span);
             }
             self.header.allocated_mask |= mask;
@@ -169,14 +164,11 @@ pub fn Hyperblock(comptime Heap: type) type {
             };
             var new_free_span =
                 prev_free_span orelse self.freeSpanStartingAt(start_chunk);
-            // TODO: Make a FreeSpanHeader.init() method to do this stuff
-            new_free_span.hyperblock = self;
-            new_free_span.list_node.init();
-            new_free_span.num_chunks =
+            new_free_span.init(
+                self,
                 (if (prev_free_span) |span| span.num_chunks else 0) +
-                num_chunks +
-                (if (next_free_span) |span| span.num_chunks else 0);
-            // TODO: In debug mode, memset rest of new_free_span to 0xdd
+                    num_chunks +
+                    (if (next_free_span) |span| span.num_chunks else 0));
             free_span_lists.insert(new_free_span);
             // Mark this span as free.
             self.header.allocated_mask &= ~mask;
@@ -274,6 +266,20 @@ pub fn FreeSpanHeader(comptime Heap: type) type {
         hyperblock: *Hyperblock(Heap),
         list_node: FreeSpanListNode,
         num_chunks: u32,
+
+        fn init(self: *this, hyperblock: *Hyperblock(Heap),
+                num_chunks: u32) void {
+            assert(num_chunks >= 1);
+            assert(num_chunks <= params.hyperblock_num_chunks);
+            assert(@ptrToInt(self) % params.chunk_size == 0);
+            assert(@ptrToInt(self) > @ptrToInt(hyperblock));
+            assert(@ptrToInt(self) <
+                       @ptrToInt(hyperblock) + params.hyperblock_size);
+            self.hyperblock = hyperblock;
+            self.list_node.init();
+            self.num_chunks = num_chunks;
+            // TODO: In debug mode, memset the rest of the span to 0xdd
+        }
     };
 }
 
