@@ -3,6 +3,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
+const dlist = @import("dlist.zig");
+const ListNode = dlist.ListNode;
 const params = @import("params.zig");
 
 //===========================================================================//
@@ -24,7 +26,7 @@ pub fn HyperblockHeader(comptime Heap: type) type {
         /// highest bit is unused).
         allocated_mask: HyperblockMask,
         /// Intrusive doubly-linked list node.
-        list_node: HyperblockListNode,
+        list_node: ListNode,
     };
 }
 
@@ -213,32 +215,9 @@ pub fn Hyperblock(comptime Heap: type) type {
     };
 }
 
-
-pub const HyperblockListNode = packed struct {
-    next: *HyperblockListNode,
-    prev: *HyperblockListNode,
-
-    fn init(self: *this) void {
-        self.next = self;
-        self.prev = self;
-    }
-
-    fn insert_after(self: *this, other: *this) void {
-        self.prev = other;
-        self.next = other.next;
-        other.next.prev = self;
-        other.next = self;
-    }
-
-    fn remove(self: *this) void {
-        self.prev.next = self.next;
-        self.next.prev = self.prev;
-    }
-};
-
 pub fn HyperblockList(comptime Heap: type) type {
     return struct {
-        node: HyperblockListNode,
+        node: ListNode,
 
         /// Initializes this list to empty.
         pub fn init(self: *this) void {
@@ -259,13 +238,11 @@ pub fn HyperblockList(comptime Heap: type) type {
 
         /// Returns true if the list is empty.
         fn isEmpty(self: *const this) bool {
-            assert((self.node.next == &self.node) ==
-                   (self.node.prev == &self.node));
-            return self.node.next == &self.node;
+            return self.node.isEmpty();
         }
 
         fn insert(self: *this, hyperblock: *Hyperblock(Heap)) void {
-            hyperblock.header.list_node.insert_after(&self.node);
+            hyperblock.header.list_node.insertAfter(&self.node);
         }
     };
 }
@@ -277,7 +254,7 @@ pub fn FreeSpanHeader(comptime Heap: type) type {
         const ThisType = this;
 
         hyperblock: *Hyperblock(Heap),
-        list_node: FreeSpanListNode,
+        list_node: ListNode,
         num_chunks: u32,
 
         fn init(self: *ThisType, hyperblock: *Hyperblock(Heap),
@@ -303,31 +280,9 @@ pub fn FreeSpanHeader(comptime Heap: type) type {
     };
 }
 
-pub const FreeSpanListNode = struct {
-    next: *FreeSpanListNode,
-    prev: *FreeSpanListNode,
-
-    fn init(self: *this) void {
-        self.next = self;
-        self.prev = self;
-    }
-
-    fn insert_after(self: *this, other: *this) void {
-        self.prev = other;
-        self.next = other.next;
-        other.next.prev = self;
-        other.next = self;
-    }
-
-    fn remove(self: *this) void {
-        self.prev.next = self.next;
-        self.next.prev = self.prev;
-    }
-};
-
 pub fn FreeSpanList(comptime Heap: type) type {
     return struct {
-        node: FreeSpanListNode,
+        node: ListNode,
 
         /// Initializes this list to empty.
         pub fn init(self: *this) void {
@@ -336,9 +291,7 @@ pub fn FreeSpanList(comptime Heap: type) type {
 
         /// Returns true if the list is empty.
         fn isEmpty(self: *const this) bool {
-            assert((self.node.next == &self.node) ==
-                   (self.node.prev == &self.node));
-            return self.node.next == &self.node;
+            return self.node.isEmpty();
         }
 
         /// Returns the free span at the head of the list, or null if the list
@@ -353,7 +306,7 @@ pub fn FreeSpanList(comptime Heap: type) type {
         }
 
         fn insert(self: *this, free_span: *FreeSpanHeader(Heap)) void {
-            free_span.list_node.insert_after(&self.node);
+            free_span.list_node.insertAfter(&self.node);
         }
     };
 }

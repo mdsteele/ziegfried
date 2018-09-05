@@ -3,13 +3,15 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
+const dlist = @import("dlist.zig");
+const ListNode = dlist.ListNode;
 const params = @import("params.zig");
 
 //===========================================================================//
 
 // The Superblock struct is kept packed so that we can rely on the alignments
 // of positions within its `blocks` array.  This in turn obligates us to
-// declare SuperblockHeader and SuperblockListNode packed as well.
+// declare SuperblockHeader packed as well.
 
 pub fn SuperblockHeader(comptime Heap: type) type {
     return packed struct {
@@ -25,7 +27,7 @@ pub fn SuperblockHeader(comptime Heap: type) type {
         /// The head of the freelist.
         first_free_block: ?[*]u8,
         /// Intrusive doubly-linked list node.
-        list_node: SuperblockListNode,
+        list_node: ListNode,
         /// The heap that this superblock belongs to.
         heap: *Heap,
     };
@@ -52,8 +54,7 @@ pub fn Superblock(comptime Heap: type) type {
                 @divFloor(@intCast(u32, superblock.blocks.len), block_size);
             superblock.header.num_free_blocks = superblock.header.num_blocks;
             superblock.header.heap = heap;
-            superblock.header.list_node.prev = &superblock.header.list_node;
-            superblock.header.list_node.next = &superblock.header.list_node;
+            superblock.header.list_node.init();
             // Initialize block free list:
             var next: ?[*]u8 = null;
             var offset: usize = superblock.blocks.len;
@@ -69,8 +70,7 @@ pub fn Superblock(comptime Heap: type) type {
         }
 
         pub fn deinit(self: *this, child_allocator: *Allocator) void {
-            self.header.list_node.prev.next = self.header.list_node.next;
-            self.header.list_node.next.prev = self.header.list_node.prev;
+            self.header.list_node.remove();
             child_allocator.destroy(self);
         }
 
@@ -96,14 +96,8 @@ pub fn Superblock(comptime Heap: type) type {
         /// current list, then the superblock is moved to the head of that
         /// list.
         pub fn transferTo(self: *this, list: *SuperblockList(Heap)) void {
-            // Remove from old list (which may be the same as the new list):
-            self.header.list_node.prev.next = self.header.list_node.next;
-            self.header.list_node.next.prev = self.header.list_node.prev;
-            // Insert into new list:
-            self.header.list_node.prev = &list.node;
-            self.header.list_node.next = list.node.next;
-            list.node.next.prev = &self.header.list_node;
-            list.node.next = &self.header.list_node;
+            self.header.list_node.remove();
+            list.insert(self);
         }
 
         /// Allocates a slice of memory of the given size (which must be no
@@ -164,19 +158,13 @@ pub fn Superblock(comptime Heap: type) type {
     };
 }
 
-pub const SuperblockListNode = packed struct {
-    next: *SuperblockListNode,
-    prev: *SuperblockListNode,
-};
-
 pub fn SuperblockList(comptime Heap: type) type {
     return struct {
-        node: SuperblockListNode,
+        node: ListNode,
 
         /// Initializes this list to empty.
         pub fn init(self: *this) void {
-            self.node.next = &self.node;
-            self.node.prev = &self.node;
+            self.node.init();
         }
 
         /// Frees all superblocks in this list.
@@ -193,9 +181,7 @@ pub fn SuperblockList(comptime Heap: type) type {
 
         /// Returns true if the list is empty.
         fn isEmpty(self: *const this) bool {
-            assert((self.node.next == &self.node) ==
-                   (self.node.prev == &self.node));
-            return self.node.next == &self.node;
+            return self.node.isEmpty();
         }
 
         /// Returns the superblock at the head of the list, or null if the list
@@ -210,6 +196,10 @@ pub fn SuperblockList(comptime Heap: type) type {
                 assert(header.magic_number == params.superblock_magic_number);
                 return @fieldParentPtr(Superblock(Heap), "header", header);
             }
+        }
+
+        fn insert(self: *this, superblock: *Superblock(Heap)) void {
+            superblock.header.list_node.insertAfter(&self.node);
         }
     };
 }
