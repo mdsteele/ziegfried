@@ -3,6 +3,16 @@ const assert = std.debug.assert;
 
 //===========================================================================//
 
+/// Newly allocated memory will be memset to this value in debug mode, to help
+/// users catch bugs where they use uninitialized memory.
+pub const allocated_byte_memset: u8 = 0xaa;
+
+/// Deallocated memory will (to some extent) be memset to this value in debug
+/// mode, to help users catch use-after-free bugs.
+pub const deallocated_byte_memset: u8 = 0xdd;
+
+//===========================================================================//
+
 /// Arbitrary magic number stored as the first field in a Superblock struct.
 /// We use this to help detect errors where a program tries to free memory to
 /// our allocator that was not allocated by it.

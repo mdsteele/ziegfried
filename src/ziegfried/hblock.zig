@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
@@ -112,9 +113,19 @@ pub fn Hyperblock(comptime Heap: type) type {
                                 &self.chunks[start_chunk + num_chunks - 1]
                                 [params.chunk_size - @sizeOf(?*ThisType)])).* =
                 self;
-            // TODO: In Debug mode, memset the allocated memory to 0xaa.
-            // TODO: In Debug mode, memset rest of allocated span to 0xdd.
-            return @ptrCast([*]u8, &self.chunks[start_chunk])[0..size];
+            var new_mem = @ptrCast([*]u8, &self.chunks[start_chunk])[0..size];
+            // In debug mode, memset the allocated portion of the span to 0xaa,
+            // and the unallocated portion of the span (other than the
+            // hyperblock pointer) to 0xdd.
+            if (builtin.mode == builtin.Mode.Debug) {
+                std.mem.set(u8, new_mem, params.allocated_byte_memset);
+                const start = @ptrToInt(new_mem.ptr) + new_mem.len;
+                const len = usize(num_chunks) * params.chunk_size -
+                    (new_mem.len + @sizeOf(?*ThisType));
+                std.mem.set(u8, @intToPtr([*]u8, start)[0..len],
+                            params.deallocated_byte_memset);
+            }
+            return new_mem;
         }
 
         pub fn free(self: *ThisType, old_mem: []u8,
@@ -263,11 +274,13 @@ pub fn HyperblockList(comptime Heap: type) type {
 
 pub fn FreeSpanHeader(comptime Heap: type) type {
     return struct {
+        const ThisType = this;
+
         hyperblock: *Hyperblock(Heap),
         list_node: FreeSpanListNode,
         num_chunks: u32,
 
-        fn init(self: *this, hyperblock: *Hyperblock(Heap),
+        fn init(self: *ThisType, hyperblock: *Hyperblock(Heap),
                 num_chunks: u32) void {
             assert(num_chunks >= 1);
             assert(num_chunks <= params.hyperblock_num_chunks);
@@ -278,7 +291,14 @@ pub fn FreeSpanHeader(comptime Heap: type) type {
             self.hyperblock = hyperblock;
             self.list_node.init();
             self.num_chunks = num_chunks;
-            // TODO: In debug mode, memset the rest of the span to 0xdd
+            // In debug mode, memset the rest of the free span to 0xdd.
+            if (builtin.mode == builtin.Mode.Debug) {
+                const header_size = @sizeOf(ThisType);
+                const start = @ptrToInt(self) + header_size;
+                const len = num_chunks * params.chunk_size - header_size;
+                std.mem.set(u8, @intToPtr([*]u8, start)[0..len],
+                            params.deallocated_byte_memset);
+            }
         }
     };
 }

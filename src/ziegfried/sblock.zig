@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
@@ -116,9 +117,17 @@ pub fn Superblock(comptime Heap: type) type {
                 self.header.first_free_block =
                     @ptrCast(*?[*]u8,
                              @alignCast(params.min_block_size, ptr)).*;
-                // TODO: In Debug mode, memset the memory to 0xaa.
-                // TODO: In Debug mode, memset rest of block to 0xdd.
-                return ptr[0..size];
+                var new_mem = ptr[0..size];
+                // In debug mode, memset the allocated portion of the block to
+                // 0xaa, and the unallocated portion of the block to 0xdd.
+                if (builtin.mode == builtin.Mode.Debug) {
+                    std.mem.set(u8, new_mem, params.allocated_byte_memset);
+                    const start = @ptrToInt(new_mem.ptr) + new_mem.len;
+                    const len = self.header.block_size - new_mem.len;
+                    std.mem.set(u8, @intToPtr([*]u8, start)[0..len],
+                                params.deallocated_byte_memset);
+                }
+                return new_mem;
             } else {
                 assert(self.header.num_free_blocks == 0);
                 return Allocator.Error.OutOfMemory;
@@ -143,7 +152,14 @@ pub fn Superblock(comptime Heap: type) type {
                 self.header.first_free_block;
             self.header.first_free_block = old_mem.ptr;
             self.header.num_free_blocks += 1;
-            // TODO: In Debug mode, memset rest of block to 0xdd.
+            // In debug mode, memset the rest of the free block to 0xdd.
+            if (builtin.mode == builtin.Mode.Debug) {
+                const ptr_size = @sizeOf(*?[*]u8);
+                const start = @ptrToInt(old_mem.ptr) + ptr_size;
+                const len = self.header.block_size - ptr_size;
+                std.mem.set(u8, @intToPtr([*]u8, start)[0..len],
+                            params.deallocated_byte_memset);
+            }
         }
     };
 }
