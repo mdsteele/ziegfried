@@ -5,7 +5,7 @@
 **Ziegfried** ("Zig-`free()`-d") is a general-purpose memory allocator for the
 [Zig programming language](https://ziglang.org), loosely based on the
 principles of [Hoard: A Scalable Memory Allocator for Multithreaded
-Applications](www.cs.utexas.edu/users/mckinley/papers/asplos-2000.pdf)
+Applications](https://www.cs.utexas.edu/users/mckinley/papers/asplos-2000.pdf)
 by Emery D. Berger, Kathryn S. McKinley, Robert D. Blumofe, and Paul R. Wilson,
 and with some additional influence from
 [Miser - A Dynamically Loadable Memory Allocator for Multi-Threaded
